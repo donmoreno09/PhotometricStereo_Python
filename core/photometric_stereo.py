@@ -51,56 +51,57 @@ class PhotometricStereo:
     def process(self):
         """
         Compute surface normals and albedo using photometric stereo.
-        
-        Returns
-        -------
-        tuple
-            (albedo, normals) - albedo values and normal vectors
+        Exact implementation of the MATLAB algorithm.
         """
         # Reshape images for processing
-        # Original: I is (Height x Width x NumImages)
-        # Reshaped: I_reshaped is (NumPixels x NumImages)
-        num_pixels = self.height * self.width
-        I_reshaped = self.images.reshape(num_pixels, self.num_images).T
+        [N1, N2, M] = self.images.shape
+        N = N1 * N2
+        I = np.reshape(self.images, (N, M)).T
+        mask = np.reshape(self.mask, (N, M))
         
-        # Create mask for valid pixels
-        mask_flat = self.mask.flatten()
+        # Create mask index for efficient computation
+        mask_index = np.zeros(N, dtype=int)
+        for i in range(M):
+            mask_index = mask_index * 2 + mask[:, i]
         
-        # Initialize results arrays for normals and albedo
-        normals = np.zeros((3, num_pixels))
-        albedo = np.zeros(num_pixels)
+        unique_mask_indices = np.unique(mask_index)
         
-        # Process only pixels within mask
-        valid_pixels = np.where(mask_flat)[0]
+        # Estimate scaled normal vectors
+        b = np.full((3, N), np.nan)
+        for idx in unique_mask_indices:
+            # Find all pixels with this index
+            pixel_idx = np.where(mask_index == idx)[0]
+            
+            # Find all images that are active for this index
+            image_tag = mask[pixel_idx[0], :]
+            
+            if np.sum(image_tag) < 3:
+                continue
+            
+            # Create lighting matrix for active images
+            Li = self.light_directions[:, image_tag]
+            
+            # Create intensity matrix for these pixels and active images
+            Ii = I[image_tag, :][:, pixel_idx]
+            
+            # Compute scaled normal
+            # Equivalent to MATLAB's Li' \ Ii
+            b[:, pixel_idx] = np.linalg.lstsq(Li.T, Ii, rcond=None)[0]
         
-        # For each valid pixel, solve the linear system to find the surface normal
-        # This is a vectorized version of the pixel-by-pixel computation
-        I_valid = I_reshaped[:, valid_pixels]
+        # Reshape and calculate albedo and unit normal vectors
+        b = np.reshape(b.T, (N1, N2, 3))
+        rho = np.sqrt(np.sum(b**2, axis=2))
         
-        # Solve normal vectors using least squares for all pixels at once
-        # Equivalent to: n_tilde = (L^T L)^(-1) L^T I for each pixel
-        L = self.light_directions
-        L_pseudo_inv = np.linalg.pinv(L)
-        n_tilde = L_pseudo_inv @ I_valid
+        # Avoid division by zero
+        n = np.zeros_like(b)
+        valid_pixels = rho > 0
+        for i in range(3):
+            n_channel = b[:,:,i].copy()
+            n_channel[valid_pixels] = n_channel[valid_pixels] / rho[valid_pixels]
+            n[:,:,i] = n_channel
         
-        # Compute albedo (norm of n_tilde)
-        albedo_valid = np.linalg.norm(n_tilde, axis=0)
-        
-        # Normalize to get unit normal vectors
-        # Avoid division by zero by setting a minimum albedo value
-        min_albedo = 1e-8
-        mask_non_zero = albedo_valid > min_albedo
-        
-        n_normalized = np.zeros_like(n_tilde)
-        n_normalized[:, mask_non_zero] = n_tilde[:, mask_non_zero] / albedo_valid[mask_non_zero]
-        
-        # Assign results to output arrays
-        normals[:, valid_pixels] = n_normalized
-        albedo[valid_pixels] = albedo_valid
-        
-        # Reshape normals to image dimensions (3 x Height x Width)
-        self.normals = normals.reshape((3, self.height, self.width))
-        self.albedo = albedo.reshape((self.height, self.width))
+        self.normals = np.transpose(n, (2, 0, 1))  # Convert to (3, N1, N2)
+        self.albedo = rho
         
         return self.albedo, self.normals
     

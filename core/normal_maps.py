@@ -98,15 +98,19 @@ def compute_normal_maps(config, progress_callback=None):
     print('Estimating normal vectors and albedo (without light strength estimation) ...')
     ps = PhotometricStereo(images, light_directions, shadow_mask)
     albedo, normals = ps.process()
-    
+
     # Convert from (3, height, width) to (height, width, 3) format if needed
     if normals.shape[0] == 3:
         normals = np.transpose(normals, (1, 2, 0))
-    
+
+    # Evaluate normal estimate by intensity error
+    eval_opts = {'display': True}
+    Ierr = eval_n_estimate_by_i_error(albedo, normals, images, shadow_mask, light_directions, eval_opts)
+
     if progress_callback:
         progress_callback(40)
         QCoreApplication.processEvents()
-    
+
     # Using light strength estimation if available
     if 'light_strength_path' in config and config['light_strength_path']:
         print('Estimating normal vectors and albedo (with light strength estimation) ...')
@@ -124,7 +128,11 @@ def compute_normal_maps(config, progress_callback=None):
             # Convert from (3, height, width) to (height, width, 3) format if needed
             if normals.shape[0] == 3:
                 normals = np.transpose(normals, (1, 2, 0))
-        
+            
+            # Evaluate normal estimate by intensity error - commented out as in MATLAB
+            # eval_opts = {'display': True}
+            # Ierr = eval_n_estimate_by_i_error(albedo, normals, images, shadow_mask, light_directions_scaled, eval_opts)
+            
         except Exception as e:
             print(f"Error loading light strength file: {e}")
     
@@ -673,3 +681,77 @@ def load_processed_images(image_paths, options=None):
         I[:, :, i] = img_tmp
     
     return I
+
+
+def eval_n_estimate_by_i_error(rho, n, I, mask, light_directions, options=None):
+    """
+    Evaluate scaled normal estimation by intensity error.
+    Python equivalent of EvalNEstimateByIError.m
+    
+    Parameters
+    ----------
+    rho : ndarray
+        Albedo map, shape (height, width)
+    n : ndarray
+        Normal map, shape (height, width, 3) or (3, height, width)
+    I : ndarray
+        Input images, shape (height, width, num_images)
+    mask : ndarray
+        Shadow mask, shape (height, width, num_images)
+    light_directions : ndarray
+        Light directions, shape (3, num_images)
+    options : dict, optional
+        Options:
+        - display: whether to print error statistics
+        
+    Returns
+    -------
+    ndarray
+        Error map, shape (height, width)
+    """
+    if options is None:
+        options = {'display': False}
+    
+    # Handle different dimension layouts for n
+    if n.shape[0] == 3:
+        n = np.transpose(n, (1, 2, 0))
+    
+    # Get dimensions
+    height, width, num_images = I.shape
+    N = height * width
+    
+    # Resize (vectorize) the input
+    I_reshaped = I.reshape(N, num_images)
+    mask_reshaped = mask.reshape(N, num_images)
+    n_reshaped = n.reshape(N, 3)
+    
+    # Calculate b = rho * n
+    rho_expanded = np.repeat(rho.reshape(N, 1), 3, axis=1)
+    b = rho_expanded * n_reshaped
+    
+    # Compute error map
+    Ierr = np.zeros(N)
+    for i in range(num_images):
+        Ierr_i = I_reshaped[:, i] - np.dot(b, light_directions[:, i])
+        Ierr_i[~mask_reshaped[:, i]] = 0
+        Ierr = Ierr + Ierr_i**2
+    
+    # Compute RMS and reshape
+    mask_sum = np.sum(mask_reshaped, axis=1)
+    
+    # Avoid division by zero
+    mask_sum[mask_sum == 0] = np.nan
+    Ierr = np.sqrt(Ierr / mask_sum)
+    Ierr = Ierr.reshape(height, width)
+    
+    # Print error statistics
+    if options.get('display', False):
+        Ierr_valid = Ierr[np.isfinite(Ierr)]
+        print('Evaluate scaled normal estimation by intensity error:')
+        print(f'  RMS = {np.sqrt(np.mean(Ierr_valid**2)):.4f}')
+        print(f'  Mean = {np.mean(Ierr_valid):.4f}')
+        print(f'  Median = {np.median(Ierr_valid):.4f}')
+        print(f'  90 percentile = {np.percentile(Ierr_valid, 90):.4f}')
+        print(f'  Max = {np.max(Ierr_valid):.4f}')
+    
+    return Ierr
