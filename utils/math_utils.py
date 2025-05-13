@@ -4,49 +4,67 @@ Mathematical utilities for photometric stereo.
 
 import numpy as np
 from scipy import linalg
+import cv2
+
+
+def check_bit_depth(image):
+    """
+    Determine the bit depth of an image.
+    Equivalent to checkBithdepth.m in MATLAB
+    
+    Parameters
+    ----------
+    image : ndarray
+        Input image
+        
+    Returns
+    -------
+    float
+        Divider based on bit depth (65535 for 16-bit, 255 for 8-bit)
+    """
+    if np.max(image) > 255:
+        return 65535.0
+    else:
+        return 255.0
 
 
 def check_decimation(config, p, q):
     """
-    Check and adjust decimation parameters for mesh generation.
-    Python implementation of checkDecimation.m
+    Apply decimation to gradient maps according to the method specified in config.
+    Equivalent to checkDecimation.m in MATLAB
     
     Parameters
     ----------
     config : dict
-        Configuration dictionary
-    p : int
-        Initial decimation factor for rows
-    q : int
-        Initial decimation factor for columns
+        Configuration dictionary with decimation settings:
+            - decimation_method: 'Coarse' or other (smooth)
+            - decimate_surface: Decimation factor
+    p : ndarray
+        Gradient map in x direction
+    q : ndarray
+        Gradient map in y direction
         
     Returns
     -------
     tuple
-        (p, q) - Adjusted decimation factors
+        (p, q) - Decimated gradient maps
     """
-    # Get maximum mesh size from config, default to 10000
-    max_mesh_size = config.get('max_mesh_size', 10000)
+    decimation = config.get('decimate_surface', config.get('decimation', 1))
     
-    if 'normal_map' not in config:
+    if decimation <= 1:
         return p, q
     
-    # Get dimensions of normal map
-    height, width = config['normal_map'].shape[:2]
+    # Check if using 'Coarse' method (subsampling) or smooth (resize)
+    if config.get('decimation_method', '').lower() == 'coarse':
+        # Use slicing for coarse decimation (like in the MATLAB version)
+        p_decimated = p[::decimation, ::decimation]
+        q_decimated = q[::decimation, ::decimation]
+    else:
+        # Use resizing for smooth decimation (like MATLAB's imresize)
+        p_decimated = cv2.resize(p, (p.shape[1]//decimation, p.shape[0]//decimation))
+        q_decimated = cv2.resize(q, (q.shape[1]//decimation, q.shape[0]//decimation))
     
-    # Calculate number of vertices based on current decimation
-    num_vertices = (height // p) * (width // q)
-    
-    # If number of vertices is too large, increase decimation
-    if num_vertices > max_mesh_size:
-        # Calculate needed decimation factor
-        decimation_factor = np.sqrt(num_vertices / max_mesh_size)
-        
-        # Increase decimation factors
-        p = max(1, int(np.ceil(p * decimation_factor)))
-        q = max(1, int(np.ceil(q * decimation_factor)))
-    
-    return p, q
+    return p_decimated, q_decimated
 
 
 def compute_nodes_and_faces(Z, p=1, q=1):

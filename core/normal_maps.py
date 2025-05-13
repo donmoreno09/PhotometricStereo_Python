@@ -14,6 +14,7 @@ from scipy.spatial import Delaunay
 from core.photometric_stereo import PhotometricStereo
 from utils.image_processing import normalize_normals, lay_normals, poly_correction
 from utils.depth_estimation import depth_from_gradient
+from utils.math_utils import check_bit_depth, check_decimation
 
 
 def compute_normal_maps(config, progress_callback=None):
@@ -195,8 +196,7 @@ def compute_maps_step(config, normals, albedo, step, progress_callback=None):
             err_image = cv2.resize(err_image, (normals.shape[1], normals.shape[0]))
         
         # Determine bit depth for normalization
-        max_val = np.max(err_image)
-        divider = 65535.0 if max_val > 255 else 255.0
+        divider = check_bit_depth(err_image)
         
         # Apply error correction
         err_image_float = err_image.astype(np.float32) / divider
@@ -205,7 +205,7 @@ def compute_maps_step(config, normals, albedo, step, progress_callback=None):
             normals = normals - err_image_float[:, :, np.newaxis]
         else:
             normals = normals - err_image_float
-    
+                                                                                                                                                                                                                                                                                                                                                              
     # Estimate depth map from normal vectors
     print('Estimating normal vectors...')
     # Calculate p, q (surface gradients)
@@ -218,10 +218,7 @@ def compute_maps_step(config, normals, albedo, step, progress_callback=None):
     
     # Apply decimation if configured
     # This would be equivalent to checkDecimation in MATLAB
-    if config.get('decimation', 1) > 1:
-        decimation = config.get('decimation')
-        p = p[::decimation, ::decimation]
-        q = q[::decimation, ::decimation]
+    p, q = check_decimation(config, p, q)
     
     # Compute depth from gradient
     Z = depth_from_gradient(p, q)
@@ -246,7 +243,7 @@ def compute_maps_step(config, normals, albedo, step, progress_callback=None):
     if step == 1:
         # Apply polynomial correction
         # In MATLAB this was polyCorrection(config, Z, step)
-        Z = poly_correction(Z, order=3, mask=~mask)  # Using order=3 from MATLAB
+        Z = poly_correction(Z, config=config, step=step, mask=~mask)
         
         # Recalculate gradients and normals from corrected depth map
         dz_dx, dz_dy = np.gradient(Z)
